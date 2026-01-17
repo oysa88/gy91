@@ -1,4 +1,4 @@
-//% color=130 weight=100 icon="\uf14e" block="GY91 - 9DOF"
+//% color=#FF4E2B weight=100 icon="\uf14e" block="GY91 - 9DOF"
 namespace GY91 {
 
     const MPU = 0x68
