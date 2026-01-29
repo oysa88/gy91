@@ -16,12 +16,15 @@ namespace GY91 {
     let yaw = 0
     let lastTime = 0
 
-    // BMP280 calibration
     let dig_T1 = 0, dig_T2 = 0, dig_T3 = 0
     let dig_P1 = 0, dig_P2 = 0, dig_P3 = 0
     let dig_P4 = 0, dig_P5 = 0, dig_P6 = 0
     let dig_P7 = 0, dig_P8 = 0, dig_P9 = 0
     let tFine = 0
+
+    function round2(v: number): number {
+        return Math.round(v * 100) / 100
+    }
 
     //% block="initialiser GY91"
     //% group="Oppsett"
@@ -46,36 +49,36 @@ namespace GY91 {
 
     //% block="akselerasjon X (g)"
     //% group="Akselerometer"
-    export function accelX(): number { return read16(MPU, 0x3B) / ACCEL_SCALE }
+    export function accelX(): number { return round2(read16(MPU, 0x3B) / ACCEL_SCALE) }
 
     //% block="akselerasjon Y (g)"
     //% group="Akselerometer"
-    export function accelY(): number { return read16(MPU, 0x3D) / ACCEL_SCALE }
+    export function accelY(): number { return round2(read16(MPU, 0x3D) / ACCEL_SCALE) }
 
     //% block="akselerasjon Z (g)"
     //% group="Akselerometer"
-    export function accelZ(): number { return read16(MPU, 0x3F) / ACCEL_SCALE }
+    export function accelZ(): number { return round2(read16(MPU, 0x3F) / ACCEL_SCALE) }
 
     //% block="total akselerasjon (g)"
     //% group="Akselerometer"
     export function totalAcceleration(): number {
         let x = accelX(), y = accelY(), z = accelZ()
-        return Math.sqrt(x * x + y * y + z * z)
+        return round2(Math.sqrt(x * x + y * y + z * z))
     }
 
     // ================= GYROSKOP =================
 
     //% block="rotasjonshastighet X (°/s)"
     //% group="Gyroskop"
-    export function gyroX(): number { return (read16(MPU, 0x43) - gyroOffsetX) / GYRO_SCALE }
+    export function gyroX(): number { return round2((read16(MPU, 0x43) - gyroOffsetX) / GYRO_SCALE) }
 
     //% block="rotasjonshastighet Y (°/s)"
     //% group="Gyroskop"
-    export function gyroY(): number { return (read16(MPU, 0x45) - gyroOffsetY) / GYRO_SCALE }
+    export function gyroY(): number { return round2((read16(MPU, 0x45) - gyroOffsetY) / GYRO_SCALE) }
 
     //% block="rotasjonshastighet Z (°/s)"
     //% group="Gyroskop"
-    export function gyroZ(): number { return (read16(MPU, 0x47) - gyroOffsetZ) / GYRO_SCALE }
+    export function gyroZ(): number { return round2((read16(MPU, 0x47) - gyroOffsetZ) / GYRO_SCALE) }
 
     //% block="kalibrer gyroskop"
     //% group="Gyroskop"
@@ -102,22 +105,22 @@ namespace GY91 {
 
     //% block="magnetfelt X (µT)"
     //% group="Magnetometer"
-    export function magX(): number { return magRaw(0x03) * MAG_SCALE }
+    export function magX(): number { return round2(magRaw(0x03) * MAG_SCALE) }
 
     //% block="magnetfelt Y (µT)"
     //% group="Magnetometer"
-    export function magY(): number { return magRaw(0x05) * MAG_SCALE }
+    export function magY(): number { return round2(magRaw(0x05) * MAG_SCALE) }
 
     //% block="magnetfelt Z (µT)"
     //% group="Magnetometer"
-    export function magZ(): number { return magRaw(0x07) * MAG_SCALE }
+    export function magZ(): number { return round2(magRaw(0x07) * MAG_SCALE) }
 
     //% block="kompassretning (grader)"
     //% group="Magnetometer"
     export function heading(): number {
         let angle = Math.atan2(magY(), magX()) * 180 / Math.PI
         if (angle < 0) angle += 360
-        return angle
+        return round2(angle)
     }
 
     // ================= ORIENTERING =================
@@ -126,13 +129,13 @@ namespace GY91 {
     //% group="Orientering"
     export function pitch(): number {
         let ax = accelX(), ay = accelY(), az = accelZ()
-        return Math.atan2(-ax, Math.sqrt(ay * ay + az * az)) * 180 / Math.PI
+        return round2(Math.atan2(-ax, Math.sqrt(ay * ay + az * az)) * 180 / Math.PI)
     }
 
     //% block="helning sideveis (roll)"
     //% group="Orientering"
     export function roll(): number {
-        return Math.atan2(accelY(), accelZ()) * 180 / Math.PI
+        return round2(Math.atan2(accelY(), accelZ()) * 180 / Math.PI)
     }
 
     // ================= ROTASJON =================
@@ -144,10 +147,10 @@ namespace GY91 {
         let dt = (now - lastTime) / 1000
         lastTime = now
         yaw += gyroZ() * dt
-        return yaw
+        return round2(yaw)
     }
 
-    // ================= MILJØ (BMP280) =================
+    // ================= MILJØ =================
 
     function readCalibration(): void {
         pins.i2cWriteNumber(BMP280, 0x88, NumberFormat.UInt8BE, true)
@@ -180,9 +183,9 @@ namespace GY91 {
     export function temperatureC(): number {
         let adc_T = read24(0xFA) >> 4
         let var1 = (adc_T / 16384 - dig_T1 / 1024) * dig_T2
-        let var2 = ((adc_T / 131072 - dig_T1 / 8192) * (adc_T / 131072 - dig_T1 / 8192)) * dig_T3
+        let var2 = ((adc_T / 131072 - dig_T1 / 8192) ** 2) * dig_T3
         tFine = var1 + var2
-        return tFine / 5120
+        return round2(tFine / 5120)
     }
 
     //% block="lufttrykk (Pa)"
@@ -193,7 +196,7 @@ namespace GY91 {
 
         let var1 = tFine / 2 - 64000
         let var2 = var1 * var1 * dig_P6 / 32768
-        var2 = var2 + var1 * dig_P5 * 2
+        var2 += var1 * dig_P5 * 2
         var2 = var2 / 4 + dig_P4 * 65536
         var1 = (dig_P3 * var1 * var1 / 524288 + dig_P2 * var1) / 524288
         var1 = (1 + var1 / 32768) * dig_P1
@@ -203,10 +206,8 @@ namespace GY91 {
         p = (p - var2 / 4096) * 6250 / var1
         var1 = dig_P9 * p * p / 2147483648
         var2 = p * dig_P8 / 32768
-        return p + (var1 + var2 + dig_P7) / 16
+        return round2(p + (var1 + var2 + dig_P7) / 16)
     }
-
-    // ================= I2C =================
 
     function write8(addr: number, reg: number, val: number): void {
         pins.i2cWriteBuffer(addr, Buffer.fromArray([reg, val]))
