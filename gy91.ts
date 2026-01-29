@@ -25,6 +25,7 @@ namespace GY91 {
 
     //% block="initialiser GY91"
     //% group="Oppsett"
+    //% weight=100
     export function init(): void {
         write8(MPU, 0x6B, 0x00)
         write8(MPU, 0x1B, 0x00)
@@ -41,35 +42,44 @@ namespace GY91 {
         lastTime = input.runningTime()
     }
 
-    // ================= ACCEL (g) =================
+    // ================= AKSELEROMETER =================
 
     //% block="akselerasjon X (g)"
+    //% group="Akselerometer"
     export function accelX(): number { return read16(MPU, 0x3B) / ACCEL_SCALE }
 
     //% block="akselerasjon Y (g)"
+    //% group="Akselerometer"
     export function accelY(): number { return read16(MPU, 0x3D) / ACCEL_SCALE }
 
     //% block="akselerasjon Z (g)"
+    //% group="Akselerometer"
     export function accelZ(): number { return read16(MPU, 0x3F) / ACCEL_SCALE }
 
     //% block="total akselerasjon (g)"
+    //% group="Akselerometer"
     export function totalAcceleration(): number {
         let x = accelX(), y = accelY(), z = accelZ()
         return Math.sqrt(x * x + y * y + z * z)
     }
 
-    // ================= GYRO (°/s) =================
+    // ================= GYROSKOP =================
 
     //% block="rotasjonshastighet X (°/s)"
+    //% group="Gyroskop"
     export function gyroX(): number { return (read16(MPU, 0x43) - gyroOffsetX) / GYRO_SCALE }
 
     //% block="rotasjonshastighet Y (°/s)"
+    //% group="Gyroskop"
     export function gyroY(): number { return (read16(MPU, 0x45) - gyroOffsetY) / GYRO_SCALE }
 
     //% block="rotasjonshastighet Z (°/s)"
+    //% group="Gyroskop"
     export function gyroZ(): number { return (read16(MPU, 0x47) - gyroOffsetZ) / GYRO_SCALE }
 
     //% block="kalibrer gyroskop"
+    //% group="Gyroskop"
+    //% weight=90
     export function calibrateGyro(): void {
         let sx = 0, sy = 0, sz = 0
         for (let i = 0; i < 50; i++) {
@@ -83,7 +93,7 @@ namespace GY91 {
         gyroOffsetZ = sz / 50
     }
 
-    // ================= MAGNETOMETER (µT) =================
+    // ================= MAGNETOMETER =================
 
     function magRaw(reg: number): number {
         pins.i2cWriteNumber(AK8963, reg, NumberFormat.UInt8BE, true)
@@ -91,15 +101,19 @@ namespace GY91 {
     }
 
     //% block="magnetfelt X (µT)"
+    //% group="Magnetometer"
     export function magX(): number { return magRaw(0x03) * MAG_SCALE }
 
     //% block="magnetfelt Y (µT)"
+    //% group="Magnetometer"
     export function magY(): number { return magRaw(0x05) * MAG_SCALE }
 
     //% block="magnetfelt Z (µT)"
+    //% group="Magnetometer"
     export function magZ(): number { return magRaw(0x07) * MAG_SCALE }
 
     //% block="kompassretning (grader)"
+    //% group="Magnetometer"
     export function heading(): number {
         let angle = Math.atan2(magY(), magX()) * 180 / Math.PI
         if (angle < 0) angle += 360
@@ -109,17 +123,22 @@ namespace GY91 {
     // ================= ORIENTERING =================
 
     //% block="helning fremover/bakover (pitch)"
+    //% group="Orientering"
     export function pitch(): number {
         let ax = accelX(), ay = accelY(), az = accelZ()
         return Math.atan2(-ax, Math.sqrt(ay * ay + az * az)) * 180 / Math.PI
     }
 
     //% block="helning sideveis (roll)"
+    //% group="Orientering"
     export function roll(): number {
         return Math.atan2(accelY(), accelZ()) * 180 / Math.PI
     }
 
+    // ================= ROTASJON =================
+
     //% block="rotasjonsvinkel rundt Z (yaw)"
+    //% group="Rotasjon"
     export function yawAngle(): number {
         let now = input.runningTime()
         let dt = (now - lastTime) / 1000
@@ -128,7 +147,7 @@ namespace GY91 {
         return yaw
     }
 
-    // ================= BMP280 =================
+    // ================= MILJØ (BMP280) =================
 
     function readCalibration(): void {
         pins.i2cWriteNumber(BMP280, 0x88, NumberFormat.UInt8BE, true)
