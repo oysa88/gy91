@@ -2,7 +2,8 @@
 namespace GY91 {
 
     const MPU = 0x68
-    const HMC = 0x1E
+    const AK8963 = 0x0C
+    const BMP280 = 0x76
 
     let gyroOffsetX = 0
     let gyroOffsetY = 0
@@ -15,124 +16,115 @@ namespace GY91 {
     //% group="Oppsett"
     //% weight=100
     export function init(): void {
-        // MPU6050 wake
+        // --- MPU9250 WAKE ---
         write8(MPU, 0x6B, 0x00)
+        write8(MPU, 0x1B, 0x00) // gyro ±250
+        write8(MPU, 0x1C, 0x00) // accel ±2g
 
-        // Gyro ±250 dps
-        write8(MPU, 0x1B, 0x00)
-        // Acc ±2g
-        write8(MPU, 0x1C, 0x00)
+        // --- AK8963 magnetometer enable ---
+        write8(MPU, 0x37, 0x02) // bypass mode
+        basic.pause(10)
+        write8(AK8963, 0x0A, 0x16) // continuous measurement mode 2
 
-        // HMC5883L
-        write8(HMC, 0x00, 0x70)
-        write8(HMC, 0x01, 0x20)
-        write8(HMC, 0x02, 0x00)
+        // --- BMP280 init ---
+        write8(BMP280, 0xF4, 0x27) // temp + pressure on
+        write8(BMP280, 0xF5, 0xA0) // config
 
         lastTime = input.runningTime()
     }
 
     // ==================================================
-    // AKSELEROMETER
+    // ACCEL
     // ==================================================
 
     //% block="akselerasjon X"
-    //% group="Akselerometer"
-    export function accelX(): number {
-        return read16(MPU, 0x3B)
-    }
+    export function accelX(): number { return read16(MPU, 0x3B) }
 
     //% block="akselerasjon Y"
-    //% group="Akselerometer"
-    export function accelY(): number {
-        return read16(MPU, 0x3D)
-    }
+    export function accelY(): number { return read16(MPU, 0x3D) }
 
     //% block="akselerasjon Z"
-    //% group="Akselerometer"
-    export function accelZ(): number {
-        return read16(MPU, 0x3F)
-    }
+    export function accelZ(): number { return read16(MPU, 0x3F) }
 
     // ==================================================
-    // GYROSKOP
+    // GYRO
     // ==================================================
 
     //% block="rotasjonshastighet X (°/s)"
-    //% group="Gyroskop"
-    export function gyroX(): number {
-        return (read16(MPU, 0x43) - gyroOffsetX) / 131
-    }
+    export function gyroX(): number { return (read16(MPU, 0x43) - gyroOffsetX) / 131 }
 
     //% block="rotasjonshastighet Y (°/s)"
-    //% group="Gyroskop"
-    export function gyroY(): number {
-        return (read16(MPU, 0x45) - gyroOffsetY) / 131
-    }
+    export function gyroY(): number { return (read16(MPU, 0x45) - gyroOffsetY) / 131 }
 
     //% block="rotasjonshastighet Z (°/s)"
-    //% group="Gyroskop"
-    export function gyroZ(): number {
-        return (read16(MPU, 0x47) - gyroOffsetZ) / 131
-    }
+    export function gyroZ(): number { return (read16(MPU, 0x47) - gyroOffsetZ) / 131 }
 
     //% block="kalibrer gyroskop"
-    //% group="Gyroskop"
-    //% weight=90
     export function calibrateGyro(): void {
-        let sx = 0
-        let sy = 0
-        let sz = 0
-
+        let sx = 0, sy = 0, sz = 0
         for (let i = 0; i < 50; i++) {
             sx += read16(MPU, 0x43)
             sy += read16(MPU, 0x45)
             sz += read16(MPU, 0x47)
             basic.pause(10)
         }
-
         gyroOffsetX = sx / 50
         gyroOffsetY = sy / 50
         gyroOffsetZ = sz / 50
     }
 
     // ==================================================
-    // MAGNETOMETER
+    // MAGNETOMETER (AK8963)
     // ==================================================
 
-    //% block="magnetfelt X"
-    //% group="Magnetometer"
-    export function magX(): number {
-        return read16(HMC, 0x03)
+    function mag16(reg: number): number {
+        pins.i2cWriteNumber(AK8963, reg, NumberFormat.UInt8BE, true)
+        return pins.i2cReadNumber(AK8963, NumberFormat.Int16LE)
     }
+
+    //% block="magnetfelt X"
+    export function magX(): number { return mag16(0x03) }
 
     //% block="magnetfelt Y"
-    //% group="Magnetometer"
-    export function magY(): number {
-        return read16(HMC, 0x07)
-    }
+    export function magY(): number { return mag16(0x05) }
 
     //% block="magnetfelt Z"
-    //% group="Magnetometer"
-    export function magZ(): number {
-        return read16(HMC, 0x05)
-    }
+    export function magZ(): number { return mag16(0x07) }
 
     //% block="kompassretning (grader)"
-    //% group="Magnetometer"
     export function heading(): number {
-        let x = magX()
-        let y = magY()
-        let angle = Math.atan2(y, x) * 180 / Math.PI
+        let angle = Math.atan2(magY(), magX()) * 180 / Math.PI
         if (angle < 0) angle += 360
         return angle
     }
 
     // ==================================================
-    // ORIENTERING
+    // BMP280
+    // ==================================================
+
+    function read24(reg: number): number {
+        pins.i2cWriteNumber(BMP280, reg, NumberFormat.UInt8BE, true)
+        let msb = pins.i2cReadNumber(BMP280, NumberFormat.UInt8BE)
+        let lsb = pins.i2cReadNumber(BMP280, NumberFormat.UInt8BE)
+        let xlsb = pins.i2cReadNumber(BMP280, NumberFormat.UInt8BE)
+        return (msb << 16) | (lsb << 8) | xlsb
+    }
+
+    //% block="temperatur (råverdi)"
+    export function temperatureRaw(): number {
+        return read24(0xFA) >> 4
+    }
+
+    //% block="trykk (råverdi)"
+    export function pressureRaw(): number {
+        return read24(0xF7) >> 4
+    }
+
+    // ==================================================
+    // ORIENTATION
     // ==================================================
 
     //% block="helning fremover/bakover (pitch)"
-    //% group="Orientering"
     export function pitch(): number {
         let ax = accelX()
         let ay = accelY()
@@ -141,17 +133,11 @@ namespace GY91 {
     }
 
     //% block="helning sideveis (roll)"
-    //% group="Orientering"
     export function roll(): number {
         return Math.atan2(accelY(), accelZ()) * 180 / Math.PI
     }
 
-    // ==================================================
-    // ROTASJON
-    // ==================================================
-
     //% block="rotasjonsvinkel rundt Z (yaw)"
-    //% group="Rotasjon"
     export function yawAngle(): number {
         let now = input.runningTime()
         let dt = (now - lastTime) / 1000
@@ -161,7 +147,7 @@ namespace GY91 {
     }
 
     // ==================================================
-    // I2C HJELP
+    // I2C HELPERS
     // ==================================================
 
     function write8(addr: number, reg: number, val: number): void {
@@ -169,10 +155,7 @@ namespace GY91 {
     }
 
     function read16(addr: number, reg: number): number {
-        pins.i2cWriteNumber(addr, reg, NumberFormat.UInt8BE)
-        let hi = pins.i2cReadNumber(addr, NumberFormat.UInt8BE)
-        let lo = pins.i2cReadNumber(addr, NumberFormat.UInt8BE)
-        let v = (hi << 8) | lo
-        return v > 32767 ? v - 65536 : v
+        pins.i2cWriteNumber(addr, reg, NumberFormat.UInt8BE, true)
+        return pins.i2cReadNumber(addr, NumberFormat.Int16BE)
     }
 }
