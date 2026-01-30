@@ -5,20 +5,21 @@ namespace GY91 {
     const BMP280 = 0x76
     const AK8963 = 0x0C
     const HMC5883 = 0x1E
+    const QMC5883 = 0x0D
 
-    const ACCEL_SCALE = 16384      // LSB per g
-    const GYRO_SCALE = 131         // LSB per °/s
-    const MAG_SCALE = 0.15         // µT per LSB (AK8963 approx)
+    const ACCEL_SCALE = 16384
+    const GYRO_SCALE = 131
+    const MAG_AK_SCALE = 0.15
+    const MAG_HMC_SCALE = 0.92
+    const MAG_QMC_SCALE = 0.083
 
     let gyroOffsetX = 0
     let gyroOffsetY = 0
     let gyroOffsetZ = 0
-
     let yaw = 0
     let lastTime = 0
     let magType = 0
 
-    // BMP280 calibration
     let dig_T1 = 0, dig_T2 = 0, dig_T3 = 0
     let dig_P1 = 0, dig_P2 = 0, dig_P3 = 0
     let dig_P4 = 0, dig_P5 = 0, dig_P6 = 0
@@ -27,7 +28,6 @@ namespace GY91 {
 
     //% block="initialiser GY91"
     //% group="Oppsett"
-    //% weight=100
     export function init(): void {
         write8(MPU, 0x6B, 0x00)
         write8(MPU, 0x1B, 0x00)
@@ -41,29 +41,7 @@ namespace GY91 {
         lastTime = input.runningTime()
     }
 
-    //% block="kalibrer gyroskop"
-    //% group="Gyroskop"
-    export function calibrateGyro(): void {
-        let sx = 0, sy = 0, sz = 0
-        for (let i = 0; i < 50; i++) {
-            sx += read16(MPU, 0x43)
-            sy += read16(MPU, 0x45)
-            sz += read16(MPU, 0x47)
-            basic.pause(10)
-        }
-        gyroOffsetX = sx / 50
-        gyroOffsetY = sy / 50
-        gyroOffsetZ = sz / 50
-    }
-
-    export enum Axis {
-        //% block="X"
-        X,
-        //% block="Y"
-        Y,
-        //% block="Z"
-        Z
-    }
+    export enum Axis { X, Y, Z }
 
     export enum Tilt {
         //% block="pitch (frem/bak)"
@@ -99,11 +77,18 @@ namespace GY91 {
     export function magneticField(axis: Axis): number {
         if (magType == 1) {
             let reg = axis == Axis.X ? 0x03 : axis == Axis.Y ? 0x05 : 0x07
-            return round2(magRawAK(reg) * MAG_SCALE)
+            return round2(magRawAK(reg) * MAG_AK_SCALE)
         }
         if (magType == 2) {
             let reg = axis == Axis.X ? 0x03 : axis == Axis.Y ? 0x07 : 0x05
-            return round2(magRawHMC(reg) * 0.92)
+            return round2(magRawHMC(reg) * MAG_HMC_SCALE)
+        }
+        if (magType == 3) {
+            let x = read16(QMC5883, 0x00)
+            let y = read16(QMC5883, 0x02)
+            let z = read16(QMC5883, 0x04)
+            let v = axis == Axis.X ? x : axis == Axis.Y ? y : z
+            return round2(v * MAG_QMC_SCALE)
         }
         return 0
     }
@@ -121,6 +106,7 @@ namespace GY91 {
     export function magnetometerType(): string {
         if (magType == 1) return "AK8963 (MPU9250)"
         if (magType == 2) return "HMC5883L"
+        if (magType == 3) return "QMC5883L (klone)"
         return "Ikke funnet"
     }
 
@@ -184,12 +170,22 @@ namespace GY91 {
             magType = 1
             return
         }
+
         pins.i2cWriteNumber(HMC5883, 0x0A, NumberFormat.UInt8BE, true)
         if (pins.i2cReadNumber(HMC5883, NumberFormat.UInt8BE, true) == 0x48) {
             write8(HMC5883, 0x00, 0x70)
             write8(HMC5883, 0x01, 0x20)
             write8(HMC5883, 0x02, 0x00)
             magType = 2
+            return
+        }
+
+        pins.i2cWriteNumber(QMC5883, 0x0D, NumberFormat.UInt8BE, true)
+        let id = pins.i2cReadNumber(QMC5883, NumberFormat.UInt8BE, true)
+        if (id == 0xFF || id == 0x01) {
+            write8(QMC5883, 0x0B, 0x01)
+            write8(QMC5883, 0x09, 0x1D)
+            magType = 3
         }
     }
 
