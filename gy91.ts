@@ -18,7 +18,7 @@ namespace GY91 {
     let gyroOffsetZ = 0
     let yaw = 0
     let lastTime = 0
-    let magType = 0 // 0=none 1=AK8963 2=HMC 3=QMC
+    let magType = 0 // 0=none, 1=AK8963, 2=HMC, 3=QMC
 
     // BMP280 kalibrering
     let dig_T1 = 0, dig_T2 = 0, dig_T3 = 0
@@ -28,33 +28,29 @@ namespace GY91 {
     let tFine = 0
 
     export enum Axis { X, Y, Z }
-
-    export enum Tilt {
-        //% block="pitch (frem/bak)"
-        Pitch,
-        //% block="roll (sideveis)"
-        Roll
-    }
+    export enum Tilt { Pitch, Roll }
 
     function round2(v: number): number {
         return Math.round(v * 100) / 100
     }
 
+    // ------------------ INIT ------------------
     //% block="initialiser GY91"
     //% group="Oppsett"
     export function init(): void {
-        write8(MPU, 0x6B, 0x00)
-        write8(MPU, 0x1B, 0x00)
-        write8(MPU, 0x1C, 0x00)
+        write8(MPU, 0x6B, 0x00) // wake MPU
+        write8(MPU, 0x1B, 0x00) // gyro full scale
+        write8(MPU, 0x1C, 0x00) // accel full scale
 
-        write8(BMP280, 0xF4, 0x27)
-        write8(BMP280, 0xF5, 0xA0)
+        write8(BMP280, 0xF4, 0x27) // normal mode
+        write8(BMP280, 0xF5, 0xA0) // config
 
         readCalibration()
         detectMagnetometer()
         lastTime = input.runningTime()
     }
 
+    // ------------------ SENSORER ------------------
     //% block="akselerasjon %axis (g)"
     //% group="Akselerometer"
     export function acceleration(axis: Axis): number {
@@ -103,7 +99,7 @@ namespace GY91 {
     }
 
     //% block="magnetometer type"
-    //% group="Magnetometer"
+    //% group="Oppsett"
     export function magnetometerType(): string {
         if (magType == 1) return "AK8963 (MPU9250)"
         if (magType == 2) return "HMC5883L"
@@ -164,43 +160,29 @@ namespace GY91 {
         return round2(p / 256)
     }
 
-    // --------- MAG DETECTION (FORBEDRET) ---------
+    // ------------------ MAGNETOMETER DETECTION ------------------
     function detectMagnetometer() {
-
-        // AK8963 via MPU9250
-        write8(MPU, 0x37, 0x02) // enable bypass
+        // slå på bypass kun midlertidig
+        write8(MPU, 0x37, 0x02)
         control.waitMicros(10000)
 
+        // AK8963
         pins.i2cWriteNumber(AK8963, 0x00, NumberFormat.UInt8BE, true)
         let id = pins.i2cReadNumber(AK8963, NumberFormat.UInt8BE, true)
-        if (id == 0x48) {
-            write8(AK8963, 0x0A, 0x16)
-            magType = 1
-            return
-        }
+        if (id == 0x48) { write8(AK8963, 0x0A, 0x16); magType = 1; write8(MPU, 0x37, 0x00); return }
 
-        // HMC5883L
+        // HMC5883
         pins.i2cWriteNumber(HMC5883, 0x0A, NumberFormat.UInt8BE, true)
         id = pins.i2cReadNumber(HMC5883, NumberFormat.UInt8BE, true)
-        if (id == 0x48) {
-            write8(HMC5883, 0x00, 0x70)
-            write8(HMC5883, 0x01, 0x20)
-            write8(HMC5883, 0x02, 0x00)
-            magType = 2
-            return
-        }
+        if (id == 0x48) { write8(HMC5883, 0x00, 0x70); write8(HMC5883, 0x01, 0x20); write8(HMC5883, 0x02, 0x00); magType = 2; write8(MPU, 0x37, 0x00); return }
 
         // QMC5883
         pins.i2cWriteNumber(QMC5883, 0x0D, NumberFormat.UInt8BE, true)
         id = pins.i2cReadNumber(QMC5883, NumberFormat.UInt8BE, true)
-        if (id == 0xFF || id == 0x01) {
-            write8(QMC5883, 0x0B, 0x01)
-            write8(QMC5883, 0x09, 0x1D)
-            magType = 3
-            return
-        }
+        if (id == 0xFF || id == 0x01) { write8(QMC5883, 0x0B, 0x01); write8(QMC5883, 0x09, 0x1D); magType = 3; write8(MPU, 0x37, 0x00); return }
 
         magType = 0
+        write8(MPU, 0x37, 0x00)
     }
 
     function magRawAK(reg: number): number {
@@ -215,6 +197,7 @@ namespace GY91 {
         return read16(HMC5883, reg)
     }
 
+    // ------------------ I2C-HJELPEFUNKSJONER ------------------
     function write8(addr: number, reg: number, val: number): void {
         pins.i2cWriteBuffer(addr, Buffer.fromArray([reg, val]))
     }
@@ -248,5 +231,24 @@ namespace GY91 {
         dig_P7 = read16(BMP280, 0x9A)
         dig_P8 = read16(BMP280, 0x9C)
         dig_P9 = read16(BMP280, 0x9E)
+    }
+
+    // ------------------ I2C-SCANNER ------------------
+    //% block="skann I2C-bus"
+    //% group="Oppsett"
+    export function scanI2C(): number[] {
+        let found: number[] = []
+        for (let addr = 0x03; addr <= 0x77; addr++) {
+            let ok = true
+            control.inBackground(() => {
+                try {
+                    pins.i2cWriteNumber(addr, 0x00, NumberFormat.UInt8BE, true)
+                } catch {
+                    ok = false
+                }
+            })
+            if (ok) found.push(addr)
+        }
+        return found
     }
 }
