@@ -2,13 +2,13 @@
 namespace GY91 {
 
     const MPU = 0x68
+    const BMP280 = 0x76
     const AK8963 = 0x0C
     const HMC5883 = 0x1E
-    const BMP280 = 0x76
 
-    const ACCEL_SCALE = 16384
-    const GYRO_SCALE = 131
-    const MAG_SCALE = 0.15
+    const ACCEL_SCALE = 16384      // LSB per g
+    const GYRO_SCALE = 131         // LSB per °/s
+    const MAG_SCALE = 0.15         // µT per LSB (AK8963 approx)
 
     let gyroOffsetX = 0
     let gyroOffsetY = 0
@@ -16,19 +16,14 @@ namespace GY91 {
 
     let yaw = 0
     let lastTime = 0
+    let magType = 0
 
-    let magAddr = 0
-    let magType = 0 // 1 = AK8963, 2 = HMC5883L
-
+    // BMP280 calibration
     let dig_T1 = 0, dig_T2 = 0, dig_T3 = 0
     let dig_P1 = 0, dig_P2 = 0, dig_P3 = 0
     let dig_P4 = 0, dig_P5 = 0, dig_P6 = 0
     let dig_P7 = 0, dig_P8 = 0, dig_P9 = 0
     let tFine = 0
-
-    function round2(v: number): number {
-        return Math.round(v * 100) / 100
-    }
 
     //% block="initialiser GY91"
     //% group="Oppsett"
@@ -46,41 +41,6 @@ namespace GY91 {
         lastTime = input.runningTime()
     }
 
-    // ================= AKSELEROMETER =================
-
-    //% block="akselerasjon X (g)"
-    //% group="Akselerometer"
-    export function accelX(): number { return round2(read16(MPU, 0x3B) / ACCEL_SCALE) }
-
-    //% block="akselerasjon Y (g)"
-    //% group="Akselerometer"
-    export function accelY(): number { return round2(read16(MPU, 0x3D) / ACCEL_SCALE) }
-
-    //% block="akselerasjon Z (g)"
-    //% group="Akselerometer"
-    export function accelZ(): number { return round2(read16(MPU, 0x3F) / ACCEL_SCALE) }
-
-    //% block="total akselerasjon (g)"
-    //% group="Akselerometer"
-    export function totalAcceleration(): number {
-        let x = accelX(), y = accelY(), z = accelZ()
-        return round2(Math.sqrt(x * x + y * y + z * z))
-    }
-
-    // ================= GYROSKOP =================
-
-    //% block="rotasjonshastighet X (°/s)"
-    //% group="Gyroskop"
-    export function gyroX(): number { return round2((read16(MPU, 0x43) - gyroOffsetX) / GYRO_SCALE) }
-
-    //% block="rotasjonshastighet Y (°/s)"
-    //% group="Gyroskop"
-    export function gyroY(): number { return round2((read16(MPU, 0x45) - gyroOffsetY) / GYRO_SCALE) }
-
-    //% block="rotasjonshastighet Z (°/s)"
-    //% group="Gyroskop"
-    export function gyroZ(): number { return round2((read16(MPU, 0x47) - gyroOffsetZ) / GYRO_SCALE) }
-
     //% block="kalibrer gyroskop"
     //% group="Gyroskop"
     export function calibrateGyro(): void {
@@ -96,102 +56,86 @@ namespace GY91 {
         gyroOffsetZ = sz / 50
     }
 
-    // ================= MAGNETOMETER AUTO =================
+    export enum Axis {
+        //% block="X"
+        X,
+        //% block="Y"
+        Y,
+        //% block="Z"
+        Z
+    }
 
-    function detectMagnetometer(): void {
-        write8(MPU, 0x37, 0x02)
-        basic.pause(10)
+    export enum Tilt {
+        //% block="pitch (frem/bak)"
+        Pitch,
+        //% block="roll (sideveis)"
+        Roll
+    }
 
-        write8(AK8963, 0x0B, 0x01)
-        basic.pause(10)
-        write8(AK8963, 0x0A, 0x00)
-        basic.pause(10)
-        write8(AK8963, 0x0A, 0x16)
-        basic.pause(10)
+    function round2(v: number): number {
+        return Math.round(v * 100) / 100
+    }
 
-        pins.i2cWriteNumber(AK8963, 0x00, NumberFormat.UInt8BE, true)
-        if (pins.i2cReadNumber(AK8963, NumberFormat.UInt8BE) == 0x48) {
-            magAddr = AK8963
-            magType = 1
-            return
+    //% block="akselerasjon %axis (g)"
+    //% group="Akselerometer"
+    export function acceleration(axis: Axis): number {
+        let raw = axis == Axis.X ? read16(MPU, 0x3B)
+            : axis == Axis.Y ? read16(MPU, 0x3D)
+                : read16(MPU, 0x3F)
+        return round2(raw / ACCEL_SCALE)
+    }
+
+    //% block="rotasjonshastighet %axis (°/s)"
+    //% group="Gyroskop"
+    export function gyro(axis: Axis): number {
+        let raw = axis == Axis.X ? read16(MPU, 0x43) - gyroOffsetX
+            : axis == Axis.Y ? read16(MPU, 0x45) - gyroOffsetY
+                : read16(MPU, 0x47) - gyroOffsetZ
+        return round2(raw / GYRO_SCALE)
+    }
+
+    //% block="magnetfelt %axis (µT)"
+    //% group="Magnetometer"
+    export function magneticField(axis: Axis): number {
+        if (magType == 1) {
+            let reg = axis == Axis.X ? 0x03 : axis == Axis.Y ? 0x05 : 0x07
+            return round2(magRawAK(reg) * MAG_SCALE)
         }
-
-        pins.i2cWriteNumber(HMC5883, 0x0A, NumberFormat.UInt8BE, true)
-        if (pins.i2cReadNumber(HMC5883, NumberFormat.UInt8BE) == 0x48) {
-            write8(HMC5883, 0x00, 0x70)
-            write8(HMC5883, 0x01, 0x20)
-            write8(HMC5883, 0x02, 0x00)
-            magAddr = HMC5883
-            magType = 2
+        if (magType == 2) {
+            let reg = axis == Axis.X ? 0x03 : axis == Axis.Y ? 0x07 : 0x05
+            return round2(magRawHMC(reg) * 0.92)
         }
-    }
-
-    function magRawAK(reg: number): number {
-        pins.i2cWriteNumber(magAddr, 0x02, NumberFormat.UInt8BE, true)
-        if (!(pins.i2cReadNumber(magAddr, NumberFormat.UInt8BE) & 0x01)) return 0
-
-        pins.i2cWriteNumber(magAddr, reg, NumberFormat.UInt8BE, true)
-        let v = pins.i2cReadNumber(magAddr, NumberFormat.Int16LE)
-
-        pins.i2cWriteNumber(magAddr, 0x09, NumberFormat.UInt8BE, true)
-        pins.i2cReadNumber(magAddr, NumberFormat.UInt8BE)
-
-        return v
-    }
-
-    function magRawHMC(reg: number): number {
-        pins.i2cWriteNumber(magAddr, reg, NumberFormat.UInt8BE, true)
-        return pins.i2cReadNumber(magAddr, NumberFormat.Int16BE)
-    }
-
-    //% block="magnetfelt X (µT)"
-    //% group="Magnetometer"
-    export function magX(): number {
-        if (magType == 1) return round2(magRawAK(0x03) * MAG_SCALE)
-        if (magType == 2) return round2(magRawHMC(0x03) * 0.92)
-        return 0
-    }
-
-    //% block="magnetfelt Y (µT)"
-    //% group="Magnetometer"
-    export function magY(): number {
-        if (magType == 1) return round2(magRawAK(0x05) * MAG_SCALE)
-        if (magType == 2) return round2(magRawHMC(0x07) * 0.92)
-        return 0
-    }
-
-    //% block="magnetfelt Z (µT)"
-    //% group="Magnetometer"
-    export function magZ(): number {
-        if (magType == 1) return round2(magRawAK(0x07) * MAG_SCALE)
-        if (magType == 2) return round2(magRawHMC(0x05) * 0.92)
         return 0
     }
 
     //% block="kompassretning (grader)"
     //% group="Magnetometer"
     export function heading(): number {
-        let angle = Math.atan2(magY(), magX()) * 180 / Math.PI
+        let angle = Math.atan2(magneticField(Axis.Y), magneticField(Axis.X)) * 180 / Math.PI
         if (angle < 0) angle += 360
         return round2(angle)
     }
 
-    // ================= ORIENTERING =================
-
-    //% block="helning fremover/bakover (pitch)"
-    //% group="Orientering"
-    export function pitch(): number {
-        let ax = accelX(), ay = accelY(), az = accelZ()
-        return round2(Math.atan2(-ax, Math.sqrt(ay * ay + az * az)) * 180 / Math.PI)
+    //% block="magnetometer type"
+    //% group="Magnetometer"
+    export function magnetometerType(): string {
+        if (magType == 1) return "AK8963 (MPU9250)"
+        if (magType == 2) return "HMC5883L"
+        return "Ikke funnet"
     }
 
-    //% block="helning sideveis (roll)"
+    //% block="helning %t (grader)"
     //% group="Orientering"
-    export function roll(): number {
-        return round2(Math.atan2(accelY(), accelZ()) * 180 / Math.PI)
-    }
+    export function tilt(t: Tilt): number {
+        let ax = acceleration(Axis.X)
+        let ay = acceleration(Axis.Y)
+        let az = acceleration(Axis.Z)
 
-    // ================= ROTASJON =================
+        if (t == Tilt.Pitch)
+            return round2(Math.atan2(-ax, Math.sqrt(ay * ay + az * az)) * 180 / Math.PI)
+        else
+            return round2(Math.atan2(ay, az) * 180 / Math.PI)
+    }
 
     //% block="rotasjonsvinkel rundt Z (yaw)"
     //% group="Rotasjon"
@@ -199,64 +143,66 @@ namespace GY91 {
         let now = input.runningTime()
         let dt = (now - lastTime) / 1000
         lastTime = now
-        yaw += gyroZ() * dt
+        yaw += gyro(Axis.Z) * dt
         return round2(yaw)
-    }
-
-    // ================= MILJØ =================
-
-    function readCalibration(): void {
-        pins.i2cWriteNumber(BMP280, 0x88, NumberFormat.UInt8BE, true)
-        let buf = pins.i2cReadBuffer(BMP280, 24)
-        dig_T1 = buf.getNumber(NumberFormat.UInt16LE, 0)
-        dig_T2 = buf.getNumber(NumberFormat.Int16LE, 2)
-        dig_T3 = buf.getNumber(NumberFormat.Int16LE, 4)
-        dig_P1 = buf.getNumber(NumberFormat.UInt16LE, 6)
-        dig_P2 = buf.getNumber(NumberFormat.Int16LE, 8)
-        dig_P3 = buf.getNumber(NumberFormat.Int16LE, 10)
-        dig_P4 = buf.getNumber(NumberFormat.Int16LE, 12)
-        dig_P5 = buf.getNumber(NumberFormat.Int16LE, 14)
-        dig_P6 = buf.getNumber(NumberFormat.Int16LE, 16)
-        dig_P7 = buf.getNumber(NumberFormat.Int16LE, 18)
-        dig_P8 = buf.getNumber(NumberFormat.Int16LE, 20)
-        dig_P9 = buf.getNumber(NumberFormat.Int16LE, 22)
-    }
-
-    function read24(reg: number): number {
-        pins.i2cWriteNumber(BMP280, reg, NumberFormat.UInt8BE, true)
-        let msb = pins.i2cReadNumber(BMP280, NumberFormat.UInt8BE)
-        let lsb = pins.i2cReadNumber(BMP280, NumberFormat.UInt8BE)
-        let xlsb = pins.i2cReadNumber(BMP280, NumberFormat.UInt8BE)
-        return (msb << 16) | (lsb << 8) | xlsb
     }
 
     //% block="temperatur (°C)"
     //% group="Miljø"
-    export function temperatureC(): number {
-        let adc_T = read24(0xFA) >> 4
-        let var1 = (adc_T / 16384 - dig_T1 / 1024) * dig_T2
-        let var2 = ((adc_T / 131072 - dig_T1 / 8192) ** 2) * dig_T3
+    export function temperature(): number {
+        let adc_T = read24(BMP280, 0xFA) >> 4
+        let var1 = (((adc_T >> 3) - (dig_T1 << 1)) * dig_T2) >> 11
+        let var2 = (((((adc_T >> 4) - dig_T1) * ((adc_T >> 4) - dig_T1)) >> 12) * dig_T3) >> 14
         tFine = var1 + var2
-        return round2(tFine / 5120)
+        return round2(((tFine * 5 + 128) >> 8) / 100)
     }
 
     //% block="lufttrykk (Pa)"
     //% group="Miljø"
-    export function pressurePa(): number {
-        temperatureC()
-        let adc_P = read24(0xF7) >> 4
-        let var1 = tFine / 2 - 64000
-        let var2 = var1 * var1 * dig_P6 / 32768
-        var2 += var1 * dig_P5 * 2
-        var2 = var2 / 4 + dig_P4 * 65536
-        var1 = (dig_P3 * var1 * var1 / 524288 + dig_P2 * var1) / 524288
-        var1 = (1 + var1 / 32768) * dig_P1
+    export function pressure(): number {
+        temperature()
+        let adc_P = read24(BMP280, 0xF7) >> 4
+        let var1 = tFine - 128000
+        let var2 = var1 * var1 * dig_P6
+        var2 = var2 + ((var1 * dig_P5) << 17)
+        var2 = var2 + (dig_P4 << 35)
+        var1 = ((var1 * var1 * dig_P3) >> 8) + ((var1 * dig_P2) << 12)
+        var1 = (((1 << 47) + var1) * dig_P1) >> 33
         if (var1 == 0) return 0
         let p = 1048576 - adc_P
-        p = (p - var2 / 4096) * 6250 / var1
-        var1 = dig_P9 * p * p / 2147483648
-        var2 = p * dig_P8 / 32768
-        return round2(p + (var1 + var2 + dig_P7) / 16)
+        p = (((p << 31) - var2) * 3125) / var1
+        var1 = (dig_P9 * (p >> 13) * (p >> 13)) >> 25
+        var2 = (dig_P8 * p) >> 19
+        p = ((p + var1 + var2) >> 8) + (dig_P7 << 4)
+        return round2(p / 256)
+    }
+
+    function detectMagnetometer() {
+        pins.i2cWriteNumber(AK8963, 0x00, NumberFormat.UInt8BE, true)
+        if (pins.i2cReadNumber(AK8963, NumberFormat.UInt8BE, true) == 0x48) {
+            write8(AK8963, 0x0A, 0x16)
+            magType = 1
+            return
+        }
+        pins.i2cWriteNumber(HMC5883, 0x0A, NumberFormat.UInt8BE, true)
+        if (pins.i2cReadNumber(HMC5883, NumberFormat.UInt8BE, true) == 0x48) {
+            write8(HMC5883, 0x00, 0x70)
+            write8(HMC5883, 0x01, 0x20)
+            write8(HMC5883, 0x02, 0x00)
+            magType = 2
+        }
+    }
+
+    function magRawAK(reg: number): number {
+        pins.i2cWriteNumber(AK8963, reg, NumberFormat.UInt8BE)
+        let lo = pins.i2cReadNumber(AK8963, NumberFormat.UInt8BE)
+        let hi = pins.i2cReadNumber(AK8963, NumberFormat.UInt8BE)
+        let v = (hi << 8) | lo
+        return v > 32767 ? v - 65536 : v
+    }
+
+    function magRawHMC(reg: number): number {
+        return read16(HMC5883, reg)
     }
 
     function write8(addr: number, reg: number, val: number): void {
@@ -264,7 +210,33 @@ namespace GY91 {
     }
 
     function read16(addr: number, reg: number): number {
-        pins.i2cWriteNumber(addr, reg, NumberFormat.UInt8BE, true)
-        return pins.i2cReadNumber(addr, NumberFormat.Int16BE)
+        pins.i2cWriteNumber(addr, reg, NumberFormat.UInt8BE)
+        let hi = pins.i2cReadNumber(addr, NumberFormat.UInt8BE)
+        let lo = pins.i2cReadNumber(addr, NumberFormat.UInt8BE)
+        let v = (hi << 8) | lo
+        return v > 32767 ? v - 65536 : v
+    }
+
+    function read24(addr: number, reg: number): number {
+        pins.i2cWriteNumber(addr, reg, NumberFormat.UInt8BE)
+        let msb = pins.i2cReadNumber(addr, NumberFormat.UInt8BE)
+        let lsb = pins.i2cReadNumber(addr, NumberFormat.UInt8BE)
+        let xlsb = pins.i2cReadNumber(addr, NumberFormat.UInt8BE)
+        return (msb << 16) | (lsb << 8) | xlsb
+    }
+
+    function readCalibration() {
+        dig_T1 = read16(BMP280, 0x88)
+        dig_T2 = read16(BMP280, 0x8A)
+        dig_T3 = read16(BMP280, 0x8C)
+        dig_P1 = read16(BMP280, 0x8E)
+        dig_P2 = read16(BMP280, 0x90)
+        dig_P3 = read16(BMP280, 0x92)
+        dig_P4 = read16(BMP280, 0x94)
+        dig_P5 = read16(BMP280, 0x96)
+        dig_P6 = read16(BMP280, 0x98)
+        dig_P7 = read16(BMP280, 0x9A)
+        dig_P8 = read16(BMP280, 0x9C)
+        dig_P9 = read16(BMP280, 0x9E)
     }
 }
