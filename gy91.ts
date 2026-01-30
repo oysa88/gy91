@@ -3,7 +3,7 @@ namespace GY91 {
 
     const MPU = 0x68
     const BMP280 = 0x76
-    const AK8963 = 0x0C
+    const AK8963 = 0x0C   // Inne i MPU9250
     const HMC5883 = 0x1E
     const QMC5883 = 0x0D
 
@@ -18,13 +18,27 @@ namespace GY91 {
     let gyroOffsetZ = 0
     let yaw = 0
     let lastTime = 0
-    let magType = 0
+    let magType = 0 // 0=none 1=AK8963 2=HMC 3=QMC
 
+    // BMP280 kalibrering
     let dig_T1 = 0, dig_T2 = 0, dig_T3 = 0
     let dig_P1 = 0, dig_P2 = 0, dig_P3 = 0
     let dig_P4 = 0, dig_P5 = 0, dig_P6 = 0
     let dig_P7 = 0, dig_P8 = 0, dig_P9 = 0
     let tFine = 0
+
+    export enum Axis { X, Y, Z }
+
+    export enum Tilt {
+        //% block="pitch (frem/bak)"
+        Pitch,
+        //% block="roll (sideveis)"
+        Roll
+    }
+
+    function round2(v: number): number {
+        return Math.round(v * 100) / 100
+    }
 
     //% block="initialiser GY91"
     //% group="Oppsett"
@@ -39,19 +53,6 @@ namespace GY91 {
         readCalibration()
         detectMagnetometer()
         lastTime = input.runningTime()
-    }
-
-    export enum Axis { X, Y, Z }
-
-    export enum Tilt {
-        //% block="pitch (frem/bak)"
-        Pitch,
-        //% block="roll (sideveis)"
-        Roll
-    }
-
-    function round2(v: number): number {
-        return Math.round(v * 100) / 100
     }
 
     //% block="akselerasjon %axis (g)"
@@ -163,16 +164,25 @@ namespace GY91 {
         return round2(p / 256)
     }
 
+    // --------- MAG DETECTION (FORBEDRET) ---------
     function detectMagnetometer() {
+
+        // AK8963 via MPU9250
+        write8(MPU, 0x37, 0x02) // enable bypass
+        control.waitMicros(10000)
+
         pins.i2cWriteNumber(AK8963, 0x00, NumberFormat.UInt8BE, true)
-        if (pins.i2cReadNumber(AK8963, NumberFormat.UInt8BE, true) == 0x48) {
+        let id = pins.i2cReadNumber(AK8963, NumberFormat.UInt8BE, true)
+        if (id == 0x48) {
             write8(AK8963, 0x0A, 0x16)
             magType = 1
             return
         }
 
+        // HMC5883L
         pins.i2cWriteNumber(HMC5883, 0x0A, NumberFormat.UInt8BE, true)
-        if (pins.i2cReadNumber(HMC5883, NumberFormat.UInt8BE, true) == 0x48) {
+        id = pins.i2cReadNumber(HMC5883, NumberFormat.UInt8BE, true)
+        if (id == 0x48) {
             write8(HMC5883, 0x00, 0x70)
             write8(HMC5883, 0x01, 0x20)
             write8(HMC5883, 0x02, 0x00)
@@ -180,13 +190,17 @@ namespace GY91 {
             return
         }
 
+        // QMC5883
         pins.i2cWriteNumber(QMC5883, 0x0D, NumberFormat.UInt8BE, true)
-        let id = pins.i2cReadNumber(QMC5883, NumberFormat.UInt8BE, true)
+        id = pins.i2cReadNumber(QMC5883, NumberFormat.UInt8BE, true)
         if (id == 0xFF || id == 0x01) {
             write8(QMC5883, 0x0B, 0x01)
             write8(QMC5883, 0x09, 0x1D)
             magType = 3
+            return
         }
+
+        magType = 0
     }
 
     function magRawAK(reg: number): number {
