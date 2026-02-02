@@ -3,7 +3,7 @@ namespace GY91 {
 
     const MPU = 0x68
     const BMP280 = 0x76
-    const AK8963 = 0x0C   // Inne i MPU9250
+    const AK8963 = 0x0C
     const HMC5883 = 0x1E
     const QMC5883 = 0x0D
 
@@ -18,7 +18,7 @@ namespace GY91 {
     let gyroOffsetZ = 0
     let yaw = 0
     let lastTime = 0
-    let magType = 0 // 0=none, 1=AK8963, 2=HMC, 3=QMC
+    let magType = 0
 
     // BMP280 kalibrering
     let dig_T1 = 0, dig_T2 = 0, dig_T3 = 0
@@ -38,19 +38,19 @@ namespace GY91 {
     //% block="initialiser GY91"
     //% group="Oppsett"
     export function init(): void {
-        write8(MPU, 0x6B, 0x00) // wake MPU
-        write8(MPU, 0x1B, 0x00) // gyro full scale
-        write8(MPU, 0x1C, 0x00) // accel full scale
+        write8(MPU, 0x6B, 0x00)
+        write8(MPU, 0x1B, 0x00)
+        write8(MPU, 0x1C, 0x00)
 
-        write8(BMP280, 0xF4, 0x27) // normal mode
-        write8(BMP280, 0xF5, 0xA0) // config
+        write8(BMP280, 0xF4, 0x27)
+        write8(BMP280, 0xF5, 0xA0)
 
         readCalibration()
         detectMagnetometer()
         lastTime = input.runningTime()
     }
 
-    // ------------------ SENSORER ------------------
+    // ------------------ AKSELEROMETER ------------------
     //% block="akselerasjon %axis (g)"
     //% group="Akselerometer"
     export function acceleration(axis: Axis): number {
@@ -60,6 +60,7 @@ namespace GY91 {
         return round2(raw / ACCEL_SCALE)
     }
 
+    // ------------------ GYRO ------------------
     //% block="rotasjonshastighet %axis (°/s)"
     //% group="Gyroskop"
     export function gyro(axis: Axis): number {
@@ -69,6 +70,7 @@ namespace GY91 {
         return round2(raw / GYRO_SCALE)
     }
 
+    // ------------------ MAGNETOMETER ------------------
     //% block="magnetfelt %axis (µT)"
     //% group="Magnetometer"
     export function magneticField(axis: Axis): number {
@@ -98,15 +100,7 @@ namespace GY91 {
         return round2(angle)
     }
 
-    //% block="magnetometer type"
-    //% group="Oppsett"
-    export function magnetometerType(): string {
-        if (magType == 1) return "AK8963 (MPU9250)"
-        if (magType == 2) return "HMC5883L"
-        if (magType == 3) return "QMC5883L (klone)"
-        return "Ikke funnet"
-    }
-
+    // ------------------ ORIENTERING ------------------
     //% block="helning %t (grader)"
     //% group="Orientering"
     export function tilt(t: Tilt): number {
@@ -120,6 +114,7 @@ namespace GY91 {
             return round2(Math.atan2(ay, az) * 180 / Math.PI)
     }
 
+    // ------------------ YAW ------------------
     //% block="rotasjonsvinkel rundt Z (yaw)"
     //% group="Rotasjon"
     export function yawAngle(): number {
@@ -130,53 +125,95 @@ namespace GY91 {
         return round2(yaw)
     }
 
+    // ------------------ TEMPERATUR ------------------
     //% block="temperatur (°C)"
     //% group="Miljø"
     export function temperature(): number {
         let adc_T = read24(BMP280, 0xFA) >> 4
+
         let var1 = (((adc_T >> 3) - (dig_T1 << 1)) * dig_T2) >> 11
         let var2 = (((((adc_T >> 4) - dig_T1) * ((adc_T >> 4) - dig_T1)) >> 12) * dig_T3) >> 14
+
         tFine = var1 + var2
-        return round2(((tFine * 5 + 128) >> 8) / 100)
+
+        // Original BME/BMP-formel gir temperatur *100
+        let T_x100 = (tFine * 5 + 128) >> 8   // temperatur i hundredels °C
+
+        // Vi vil ha én desimal → del på 10 i stedet for 100
+        return Math.round(T_x100 / 10) / 10
     }
 
+    // ------------------ TRYKK ------------------
     //% block="lufttrykk (Pa)"
     //% group="Miljø"
     export function pressure(): number {
-        temperature()
+        temperature() // oppdaterer tFine først
+
         let adc_P = read24(BMP280, 0xF7) >> 4
-        let var1 = tFine - 128000
-        let var2 = var1 * var1 * dig_P6
-        var2 = var2 + ((var1 * dig_P5) << 17)
-        var2 = var2 + (dig_P4 << 35)
-        var1 = ((var1 * var1 * dig_P3) >> 8) + ((var1 * dig_P2) << 12)
-        var1 = (((1 << 47) + var1) * dig_P1) >> 33
+
+        let var1 = (tFine >> 1) - 64000
+        let var2 = (((var1 >> 2) * (var1 >> 2)) >> 11) * dig_P6
+        var2 = var2 + ((var1 * dig_P5) << 1)
+        var2 = (var2 >> 2) + (dig_P4 << 16)
+
+        var1 = (((dig_P3 * (((var1 >> 2) * (var1 >> 2)) >> 13)) >> 3) + ((dig_P2 * var1) >> 1)) >> 18
+        var1 = ((32768 + var1) * dig_P1) >> 15
+
         if (var1 == 0) return 0
-        let p = 1048576 - adc_P
-        p = (((p << 31) - var2) * 3125) / var1
-        var1 = (dig_P9 * (p >> 13) * (p >> 13)) >> 25
-        var2 = (dig_P8 * p) >> 19
-        p = ((p + var1 + var2) >> 8) + (dig_P7 << 4)
-        return round2(p / 256)
+
+        let p = ((1048576 - adc_P) - (var2 >> 12)) * 3125
+        p = Math.idiv(p, var1) * 2
+
+        var1 = (dig_P9 * (((p >> 3) * (p >> 3)) >> 13)) >> 12
+        var2 = ((p >> 2) * dig_P8) >> 13
+
+        p = p + ((var1 + var2 + dig_P7) >> 4)
+
+        return p
     }
 
-    // ------------------ MAGNETOMETER DETECTION ------------------
+    // ------------------ BMP280 KALIBRERING ------------------
+    function read16_LE_unsigned(addr: number, reg: number): number {
+        pins.i2cWriteNumber(addr, reg, NumberFormat.UInt8BE)
+        let lo = pins.i2cReadNumber(addr, NumberFormat.UInt8BE)
+        let hi = pins.i2cReadNumber(addr, NumberFormat.UInt8BE)
+        return (hi << 8) | lo
+    }
+
+    function read16_LE_signed(addr: number, reg: number): number {
+        let v = read16_LE_unsigned(addr, reg)
+        return v > 32767 ? v - 65536 : v
+    }
+
+    function readCalibration() {
+        dig_T1 = read16_LE_unsigned(BMP280, 0x88)
+        dig_T2 = read16_LE_signed(BMP280, 0x8A)
+        dig_T3 = read16_LE_signed(BMP280, 0x8C)
+
+        dig_P1 = read16_LE_unsigned(BMP280, 0x8E)
+        dig_P2 = read16_LE_signed(BMP280, 0x90)
+        dig_P3 = read16_LE_signed(BMP280, 0x92)
+        dig_P4 = read16_LE_signed(BMP280, 0x94)
+        dig_P5 = read16_LE_signed(BMP280, 0x96)
+        dig_P6 = read16_LE_signed(BMP280, 0x98)
+        dig_P7 = read16_LE_signed(BMP280, 0x9A)
+        dig_P8 = read16_LE_signed(BMP280, 0x9C)
+        dig_P9 = read16_LE_signed(BMP280, 0x9E)
+    }
+
+    // ------------------ MAG DETEKSJON ------------------
     function detectMagnetometer() {
-        // slå på bypass kun midlertidig
         write8(MPU, 0x37, 0x02)
         control.waitMicros(10000)
 
-        // AK8963
         pins.i2cWriteNumber(AK8963, 0x00, NumberFormat.UInt8BE, true)
         let id = pins.i2cReadNumber(AK8963, NumberFormat.UInt8BE, true)
         if (id == 0x48) { write8(AK8963, 0x0A, 0x16); magType = 1; write8(MPU, 0x37, 0x00); return }
 
-        // HMC5883
         pins.i2cWriteNumber(HMC5883, 0x0A, NumberFormat.UInt8BE, true)
         id = pins.i2cReadNumber(HMC5883, NumberFormat.UInt8BE, true)
         if (id == 0x48) { write8(HMC5883, 0x00, 0x70); write8(HMC5883, 0x01, 0x20); write8(HMC5883, 0x02, 0x00); magType = 2; write8(MPU, 0x37, 0x00); return }
 
-        // QMC5883
         pins.i2cWriteNumber(QMC5883, 0x0D, NumberFormat.UInt8BE, true)
         id = pins.i2cReadNumber(QMC5883, NumberFormat.UInt8BE, true)
         if (id == 0xFF || id == 0x01) { write8(QMC5883, 0x0B, 0x01); write8(QMC5883, 0x09, 0x1D); magType = 3; write8(MPU, 0x37, 0x00); return }
@@ -197,7 +234,7 @@ namespace GY91 {
         return read16(HMC5883, reg)
     }
 
-    // ------------------ I2C-HJELPEFUNKSJONER ------------------
+    // ------------------ I2C HJELP ------------------
     function write8(addr: number, reg: number, val: number): void {
         pins.i2cWriteBuffer(addr, Buffer.fromArray([reg, val]))
     }
@@ -216,39 +253,5 @@ namespace GY91 {
         let lsb = pins.i2cReadNumber(addr, NumberFormat.UInt8BE)
         let xlsb = pins.i2cReadNumber(addr, NumberFormat.UInt8BE)
         return (msb << 16) | (lsb << 8) | xlsb
-    }
-
-    function readCalibration() {
-        dig_T1 = read16(BMP280, 0x88)
-        dig_T2 = read16(BMP280, 0x8A)
-        dig_T3 = read16(BMP280, 0x8C)
-        dig_P1 = read16(BMP280, 0x8E)
-        dig_P2 = read16(BMP280, 0x90)
-        dig_P3 = read16(BMP280, 0x92)
-        dig_P4 = read16(BMP280, 0x94)
-        dig_P5 = read16(BMP280, 0x96)
-        dig_P6 = read16(BMP280, 0x98)
-        dig_P7 = read16(BMP280, 0x9A)
-        dig_P8 = read16(BMP280, 0x9C)
-        dig_P9 = read16(BMP280, 0x9E)
-    }
-
-    // ------------------ I2C-SCANNER ------------------
-    //% block="skann I2C-bus"
-    //% group="Oppsett"
-    export function scanI2C(): number[] {
-        let found: number[] = []
-        for (let addr = 0x03; addr <= 0x77; addr++) {
-            let ok = true
-            control.inBackground(() => {
-                try {
-                    pins.i2cWriteNumber(addr, 0x00, NumberFormat.UInt8BE, true)
-                } catch {
-                    ok = false
-                }
-            })
-            if (ok) found.push(addr)
-        }
-        return found
     }
 }
