@@ -2,7 +2,7 @@
 namespace GY91 {
 
     const MPU = 0x68
-    const BMP280 = 0x76
+    const BMP280 = 0x77
     const AK8963 = 0x0C
     const HMC5883 = 0x1E
     const QMC5883 = 0x0D
