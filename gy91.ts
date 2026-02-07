@@ -1,4 +1,5 @@
 //% color=#FF4E2B weight=35 icon="\uf14e" block="GY91 - 9DOF"
+//% groups=["Oppsett","Akselerometer","Gyroskop","Magnetometer","Orientering","Miljø"]
 namespace GY91 {
 
     const MPU = 0x68
@@ -12,6 +13,11 @@ namespace GY91 {
     const MAG_AK_SCALE = 0.15
     const MAG_HMC_SCALE = 0.92
     const MAG_QMC_SCALE = 0.083
+
+    let initialisert = false
+    let aksel = [0, 0, 0]
+    let gyro = [0, 0, 0]
+    let mag = [0, 0, 0]
 
     let gyroOffsetX = 0
     let gyroOffsetY = 0
@@ -37,7 +43,10 @@ namespace GY91 {
     // ------------------ INIT ------------------
     //% block="initialiser GY91"
     //% group="Oppsett"
+    //% weight=100
     export function init(): void {
+        if (initialisert) return
+
         write8(MPU, 0x6B, 0x00)
         write8(MPU, 0x1B, 0x00)
         write8(MPU, 0x1C, 0x00)
@@ -48,54 +57,79 @@ namespace GY91 {
         readCalibration()
         detectMagnetometer()
         lastTime = input.runningTime()
+        initialisert = true
+    }
+
+    // ------------------ LES ALLE SENSORER ------------------
+    //% block="les alle sensorer"
+    //% group="Oppsett"
+    //% weight=95
+    export function lesAlleSensorer(): void {
+        if (!initialisert) init()
+
+        // Akselerasjon vanlig ±2g
+        aksel[0] = round2(read16(MPU, 0x3B) / ACCEL_SCALE)
+        aksel[1] = round2(read16(MPU, 0x3D) / ACCEL_SCALE)
+        aksel[2] = round2(read16(MPU, 0x3F) / ACCEL_SCALE)
+
+        // Gyro
+        gyro[0] = round2((read16(MPU, 0x43) - gyroOffsetX) / GYRO_SCALE)
+        gyro[1] = round2((read16(MPU, 0x45) - gyroOffsetY) / GYRO_SCALE)
+        gyro[2] = round2((read16(MPU, 0x47) - gyroOffsetZ) / GYRO_SCALE)
+
+        // Magnetometer
+        if (magType == 1) {
+            mag[0] = round2(magRawAK(0x03) * MAG_AK_SCALE)
+            mag[1] = round2(magRawAK(0x05) * MAG_AK_SCALE)
+            mag[2] = round2(magRawAK(0x07) * MAG_AK_SCALE)
+        } else if (magType == 2) {
+            mag[0] = round2(magRawHMC(0x03) * MAG_HMC_SCALE)
+            mag[1] = round2(magRawHMC(0x07) * MAG_HMC_SCALE)
+            mag[2] = round2(magRawHMC(0x05) * MAG_HMC_SCALE)
+        } else if (magType == 3) {
+            mag[0] = round2(read16(QMC5883, 0x00) * MAG_QMC_SCALE)
+            mag[1] = round2(read16(QMC5883, 0x02) * MAG_QMC_SCALE)
+            mag[2] = round2(read16(QMC5883, 0x04) * MAG_QMC_SCALE)
+        } else {
+            mag[0] = input.magneticForce(Dimension.X)
+            mag[1] = input.magneticForce(Dimension.Y)
+            mag[2] = input.magneticForce(Dimension.Z)
+        }
+
+        // Miljøsensorer
+        temperatur()
+        lufttrykk()
     }
 
     // ------------------ AKSELEROMETER ------------------
     //% block="akselerasjon %axis (g)"
     //% group="Akselerometer"
     export function acceleration(axis: Axis): number {
-        let raw = axis == Axis.X ? read16(MPU, 0x3B)
-            : axis == Axis.Y ? read16(MPU, 0x3D)
-                : read16(MPU, 0x3F)
-        return round2(raw / ACCEL_SCALE)
+        if (!initialisert) init()
+        return aksel[axis]
     }
 
     // ------------------ GYRO ------------------
     //% block="rotasjonshastighet %axis (°/s)"
     //% group="Gyroskop"
-    export function gyro(axis: Axis): number {
-        let raw = axis == Axis.X ? read16(MPU, 0x43) - gyroOffsetX
-            : axis == Axis.Y ? read16(MPU, 0x45) - gyroOffsetY
-                : read16(MPU, 0x47) - gyroOffsetZ
-        return round2(raw / GYRO_SCALE)
+    export function gyroValue(axis: Axis): number {
+        if (!initialisert) init()
+        return gyro[axis]
     }
 
     // ------------------ MAGNETOMETER ------------------
     //% block="magnetfelt %axis (µT)"
     //% group="Magnetometer"
     export function magneticField(axis: Axis): number {
-        if (magType == 1) {
-            let reg = axis == Axis.X ? 0x03 : axis == Axis.Y ? 0x05 : 0x07
-            return round2(magRawAK(reg) * MAG_AK_SCALE)
-        }
-        if (magType == 2) {
-            let reg = axis == Axis.X ? 0x03 : axis == Axis.Y ? 0x07 : 0x05
-            return round2(magRawHMC(reg) * MAG_HMC_SCALE)
-        }
-        if (magType == 3) {
-            let x = read16(QMC5883, 0x00)
-            let y = read16(QMC5883, 0x02)
-            let z = read16(QMC5883, 0x04)
-            let v = axis == Axis.X ? x : axis == Axis.Y ? y : z
-            return round2(v * MAG_QMC_SCALE)
-        }
-        return 0
+        if (!initialisert) init()
+        return mag[axis]
     }
 
     //% block="kompassretning (grader)"
     //% group="Magnetometer"
     export function heading(): number {
-        let angle = Math.atan2(magneticField(Axis.Y), magneticField(Axis.X)) * 180 / Math.PI
+        if (!initialisert) init()
+        let angle = Math.atan2(mag[1], mag[0]) * 180 / Math.PI
         if (angle < 0) angle += 360
         return round2(angle)
     }
@@ -104,14 +138,10 @@ namespace GY91 {
     //% block="helning %t (grader)"
     //% group="Orientering"
     export function tilt(t: Tilt): number {
-        let ax = acceleration(Axis.X)
-        let ay = acceleration(Axis.Y)
-        let az = acceleration(Axis.Z)
-
-        if (t == Tilt.Pitch)
-            return round2(Math.atan2(-ax, Math.sqrt(ay * ay + az * az)) * 180 / Math.PI)
-        else
-            return round2(Math.atan2(ay, az) * 180 / Math.PI)
+        if (!initialisert) init()
+        let ax = aksel[0], ay = aksel[1], az = aksel[2]
+        if (t == Tilt.Pitch) return round2(Math.atan2(-ax, Math.sqrt(ay * ay + az * az)) * 180 / Math.PI)
+        else return round2(Math.atan2(ay, az) * 180 / Math.PI)
     }
 
     // ------------------ YAW ------------------
@@ -121,55 +151,41 @@ namespace GY91 {
         let now = input.runningTime()
         let dt = (now - lastTime) / 1000
         lastTime = now
-        yaw += gyro(Axis.Z) * dt
+        yaw += gyro[2] * dt
         return round2(yaw)
     }
 
     // ------------------ TEMPERATUR ------------------
     //% block="temperatur (°C)"
     //% group="Miljø"
-    export function temperature(): number {
+    export function temperatur(): number {
+        if (!initialisert) init()
         let adc_T = read24(BMP280, 0xFA) >> 4
-
         let var1 = (((adc_T >> 3) - (dig_T1 << 1)) * dig_T2) >> 11
         let var2 = (((((adc_T >> 4) - dig_T1) * ((adc_T >> 4) - dig_T1)) >> 12) * dig_T3) >> 14
-
         tFine = var1 + var2
-
-        // Original BME/BMP-formel gir temperatur *100
-        let T_x100 = (tFine * 5 + 128) >> 8   // temperatur i hundredels °C
-
-        // Vi vil ha én desimal → del på 10 i stedet for 100
+        let T_x100 = (tFine * 5 + 128) >> 8
         return Math.round(T_x100 / 10) / 10
     }
 
     // ------------------ TRYKK ------------------
     //% block="lufttrykk (Pa)"
     //% group="Miljø"
-    export function pressure(): number {
-        temperature() // oppdaterer tFine først
-
+    export function lufttrykk(): number {
+        temperatur() // oppdater tFine
         let adc_P = read24(BMP280, 0xF7) >> 4
-
         let var1 = (tFine >> 1) - 64000
         let var2 = (((var1 >> 2) * (var1 >> 2)) >> 11) * dig_P6
-        var2 = var2 + ((var1 * dig_P5) << 1)
+        var2 += (var1 * dig_P5) << 1
         var2 = (var2 >> 2) + (dig_P4 << 16)
-
         var1 = (((dig_P3 * (((var1 >> 2) * (var1 >> 2)) >> 13)) >> 3) + ((dig_P2 * var1) >> 1)) >> 18
         var1 = ((32768 + var1) * dig_P1) >> 15
-
         if (var1 == 0) return 0
-
         let p = ((1048576 - adc_P) - (var2 >> 12)) * 3125
         p = Math.idiv(p, var1) * 2
-
         var1 = (dig_P9 * (((p >> 3) * (p >> 3)) >> 13)) >> 12
         var2 = ((p >> 2) * dig_P8) >> 13
-
-        p = p + ((var1 + var2 + dig_P7) >> 4)
-
-        return p
+        return p + ((var1 + var2 + dig_P7) >> 4)
     }
 
     // ------------------ BMP280 KALIBRERING ------------------
@@ -189,7 +205,6 @@ namespace GY91 {
         dig_T1 = read16_LE_unsigned(BMP280, 0x88)
         dig_T2 = read16_LE_signed(BMP280, 0x8A)
         dig_T3 = read16_LE_signed(BMP280, 0x8C)
-
         dig_P1 = read16_LE_unsigned(BMP280, 0x8E)
         dig_P2 = read16_LE_signed(BMP280, 0x90)
         dig_P3 = read16_LE_signed(BMP280, 0x92)
@@ -201,23 +216,22 @@ namespace GY91 {
         dig_P9 = read16_LE_signed(BMP280, 0x9E)
     }
 
-    // ------------------ MAG DETEKSJON ------------------
+    // ------------------ MAGNETOMETER DETEKSJON ------------------
     function detectMagnetometer() {
         write8(MPU, 0x37, 0x02)
         control.waitMicros(10000)
-
+        // AK8963
         pins.i2cWriteNumber(AK8963, 0x00, NumberFormat.UInt8BE, true)
         let id = pins.i2cReadNumber(AK8963, NumberFormat.UInt8BE, true)
         if (id == 0x48) { write8(AK8963, 0x0A, 0x16); magType = 1; write8(MPU, 0x37, 0x00); return }
-
+        // HMC5883
         pins.i2cWriteNumber(HMC5883, 0x0A, NumberFormat.UInt8BE, true)
         id = pins.i2cReadNumber(HMC5883, NumberFormat.UInt8BE, true)
         if (id == 0x48) { write8(HMC5883, 0x00, 0x70); write8(HMC5883, 0x01, 0x20); write8(HMC5883, 0x02, 0x00); magType = 2; write8(MPU, 0x37, 0x00); return }
-
+        // QMC5883
         pins.i2cWriteNumber(QMC5883, 0x0D, NumberFormat.UInt8BE, true)
         id = pins.i2cReadNumber(QMC5883, NumberFormat.UInt8BE, true)
         if (id == 0xFF || id == 0x01) { write8(QMC5883, 0x0B, 0x01); write8(QMC5883, 0x09, 0x1D); magType = 3; write8(MPU, 0x37, 0x00); return }
-
         magType = 0
         write8(MPU, 0x37, 0x00)
     }
