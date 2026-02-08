@@ -56,6 +56,14 @@ namespace GY91 {
     let _calRunning = false
     let _minX = 0, _maxX = 0, _minY = 0, _maxY = 0, _minZ = 0, _maxZ = 0
 
+    // ───────────────── Soft-iron (diagonal skalering) ─────────────────
+    let _mGainX = 1.0, _mGainY = 1.0, _mGainZ = 1.0
+
+    // ───────────────── Remap / fortegn ─────────────────
+    // Standard: identitet og positive fortegn
+    let _mapX = 0, _mapY = 1, _mapZ = 2
+    let _sgnX = 1, _sgnY = 1, _sgnZ = 1
+
     // ───────────────── BMP280 kalibrering ─────────────────
     let dig_T1 = 0, dig_T2 = 0, dig_T3 = 0
     let dig_P1 = 0, dig_P2 = 0, dig_P3 = 0
@@ -65,13 +73,6 @@ namespace GY91 {
     let bmpPresent = false
 
     // ───────────────── Hjelpere ─────────────────
-    function _feedMinMax(x: number, y: number, z: number) {
-        if (!_calRunning) return
-        if (x < _minX) _minX = x; if (x > _maxX) _maxX = x
-        if (y < _minY) _minY = y; if (y > _maxY) _maxY = y
-        if (z < _minZ) _minZ = z; if (z > _maxZ) _maxZ = z
-    }
-
     function toHex2(n: number): string {
         n = n & 0xFF
         const D = "0123456789ABCDEF"
@@ -149,6 +150,7 @@ namespace GY91 {
         }
         return found
     }
+
     function readWhoAt(addr: number): number {
         pins.i2cWriteNumber(addr, 0x75, NumberFormat.UInt8BE, true)
         return pins.i2cReadNumber(addr, NumberFormat.UInt8BE)
@@ -167,6 +169,13 @@ namespace GY91 {
         write8(MPU, 0x1A, 0x03) // CONFIG: DLPF_CFG=3
         write8(MPU, 0x19, 0x04) // SMPLRT_DIV=4 (~200 Hz)
         basic.pause(2)
+    }
+
+    function magScaledAll(): number[] {
+        if (magType == MagType.AK_Master) return akMasterReadAll()
+        if (magType == MagType.QMC_Master) return qmcMasterReadAll()
+        if (magType == MagType.HMC_Master) return hmcMasterReadAll()
+        return [0, 0, 0]
     }
 
     // ───────── SLV0/SLV4 (med SLV0‑pause rundt SLV4) ─────────
@@ -383,10 +392,105 @@ namespace GY91 {
         return v > 32767 ? v - 65536 : v
     }
 
+    // ───────────────── Remap/skalering/kalibrering hjelpefunksjoner ─────────────────
+    function applyRemap(x: number, y: number, z: number): number[] {
+        const v = [x, y, z]
+        const rx = v[_mapX] * _sgnX
+        const ry = v[_mapY] * _sgnY
+        const rz = v[_mapZ] * _sgnZ
+        return [rx, ry, rz]
+    }
+    function _feedMinMax(x: number, y: number, z: number) {
+        if (!_calRunning) return
+        if (x < _minX) _minX = x; if (x > _maxX) _maxX = x
+        if (y < _minY) _minY = y; if (y > _maxY) _maxY = y
+        if (z < _minZ) _minZ = z; if (z > _maxZ) _maxZ = z
+    }
+
+    // ───────── Offset-kalibrering (interaktiv) ─────────
+
+    // Interne variabler for offset-kalibrering
+    let _offCalActive = false
+    let _offMinX = 0, _offMaxX = 0
+    let _offMinY = 0, _offMaxY = 0
+    let _offMinZ = 0, _offMaxZ = 0
+    let _offBtnHooked = false
+
+    function _offCalStart(): void {
+        _offCalActive = true
+
+        // Nullstill offset og sett skala=1 for rå min/maks
+        setMagOffset(0, 0, 0)
+        setMagScale(1, 1, 1)
+
+        // Første sample som init
+        const x = magnetfelt(Akse.X)
+        const y = magnetfelt(Akse.Y)
+        const z = magnetfelt(Akse.Z)
+        _offMinX = _offMaxX = x
+        _offMinY = _offMaxY = y
+        _offMinZ = _offMaxZ = z
+
+        basic.showIcon(IconNames.Target)
+        serial.writeLine("=== MAG-kalibrering (offset) START ===")
+        serial.writeLine("Instruksjon:")
+        serial.writeLine("  1) Roter GY-91 sakte i ALLE retninger i 15–30 sek")
+        serial.writeLine("  2) Trykk KNAPP A for å STOPPE og lagre offset")
+        serial.writeLine("Logger løpende mx/my/mz til Serial-plotteren...")
+
+        // Samle min/maks i bakgrunnen
+        control.inBackground(function () {
+            while (_offCalActive) {
+                const mx = magnetfelt(Akse.X)
+                const my = magnetfelt(Akse.Y)
+                const mz = magnetfelt(Akse.Z)
+
+                if (mx < _offMinX) _offMinX = mx
+                if (mx > _offMaxX) _offMaxX = mx
+                if (my < _offMinY) _offMinY = my
+                if (my > _offMaxY) _offMaxY = my
+                if (mz < _offMinZ) _offMinZ = mz
+                if (mz > _offMaxZ) _offMaxZ = mz
+
+                serial.writeValue("mx", GY91.magnetfelt(GY91.Akse.X))
+                serial.writeValue("my", GY91.magnetfelt(GY91.Akse.Y))
+                serial.writeValue("mz", GY91.magnetfelt(GY91.Akse.Z))
+
+                basic.pause(60)
+            }
+        })
+    }
+
+    function _offCalStop(): void {
+        if (!_offCalActive) return
+        _offCalActive = false
+
+        // Beregn offset = (min + max) / 2
+        const offX = (_offMinX + _offMaxX) / 2
+        const offY = (_offMinY + _offMaxY) / 2
+        const offZ = (_offMinZ + _offMaxZ) / 2
+
+        // Sett offset i biblioteket (gjelder umiddelbart)
+        setMagOffset(offX, offY, offZ)
+
+        basic.showIcon(IconNames.Yes)
+
+        // Logg resultat + kodelinje du kan lime fast i on start
+        serial.writeLine("=== MAG-kalibrering (offset) STOPP ===")
+        serial.writeLine("Min/Max (µT):")
+        serial.writeLine("  X: " + _offMinX + " / " + _offMaxX)
+        serial.writeLine("  Y: " + _offMinY + " / " + _offMaxY)
+        serial.writeLine("  Z: " + _offMinZ + " / " + _offMaxZ)
+        serial.writeLine("Offset (µT):")
+        serial.writeLine("  offX=" + offX + "  offY=" + offY + "  offZ=" + offZ)
+        serial.writeLine("Lim inn i on start for å sette ved oppstart:")
+        serial.writeLine("GY91.setMagOffset(" + offX + ", " + offY + ", " + offZ + ")")
+    }
+
     // ───────────────── Offentlige blokker (faste desimaler) ─────────────────
 
     //% block="akselerasjon %akse (g)"
-    //% group="Måling"
+    //% group="Akselerasjon"
     //% weight=100
     export function akselerasjon(akse: Akse): number {
         ensureInit()
@@ -397,7 +501,7 @@ namespace GY91 {
     }
 
     //% block="gyro %akse (°/s)"
-    //% group="Måling"
+    //% group="Gyroskop"
     //% weight=99
     export function gyro(akse: Akse): number {
         ensureInit()
@@ -409,41 +513,30 @@ namespace GY91 {
         return Math.round(dps * 10) / 10   // 1 desimal
     }
 
-    //% block="kalibrer gyro (hold rolig)"
-    //% group="Kalibrering"
-    //% advanced=true
-    //% weight=50
-    export function kalibrerGyro(): void {
-        ensureInit()
-        if (MPU == 0) { gyroOffsetZ = 0; return }
-        let sum = 0
-        for (let i = 0; i < 60; i++) { sum += read16BE(MPU, 0x47); basic.pause(5) }
-        gyroOffsetZ = Math.idiv(sum, 60)
-    }
-
-    function magScaledAll(): number[] {
-        if (magType == MagType.AK_Master) return akMasterReadAll()
-        if (magType == MagType.QMC_Master) return qmcMasterReadAll()
-        if (magType == MagType.HMC_Master) return hmcMasterReadAll()
-        return [0, 0, 0]
-    }
-
     //% block="magnetfelt %akse (µT)"
-    //% group="Måling"
+    //% group="Magnetometer"
     //% weight=98
     export function magnetfelt(akse: Akse): number {
         ensureInit()
-        const [rx, ry, rz] = magScaledAll()
-        const x = rx - _mOffX
-        const y = ry - _mOffY
-        const z = rz - _mOffZ
+        // 0) hent rå skalert µT
+        let [rx, ry, rz] = magScaledAll()
+            // 1) remap/fortegn først
+            ;[rx, ry, rz] = applyRemap(rx, ry, rz)
+        // 2) trekk fra offset (hard-iron)
+        let x = rx - _mOffX
+        let y = ry - _mOffY
+        let z = rz - _mOffZ
+        // 3) multipliser med diagonal gain (soft-iron)
+        x *= _mGainX; y *= _mGainY; z *= _mGainZ
+        // 4) oppdater min/maks under kalibrering
         if (_calRunning) _feedMinMax(x, y, z)
+        // 5) velg akse og rund til 1 desimal
         const val = (akse == Akse.X ? x : akse == Akse.Y ? y : z)
-        return Math.round(val * 10) / 10    // 1 desimal
+        return Math.round(val * 10) / 10
     }
 
     //% block="magnetfelt total styrke (µT)"
-    //% group="Orientering"
+    //% group="Magnetometer"
     //% weight=95
     export function magnetfeltTotal(): number {
         const x = magnetfelt(Akse.X)
@@ -451,41 +544,6 @@ namespace GY91 {
         const z = magnetfelt(Akse.Z)
         const b = Math.sqrt(x * x + y * y + z * z)
         return Math.round(b * 10) / 10      // 1 desimal
-    }
-
-    //% block="start magnetometer-kalibrering"
-    //% group="Kalibrering"
-    //% advanced=true
-    export function startMagKal(): void {
-        _calRunning = true
-        const [x, y, z] = magScaledAll()
-        _minX = x; _maxX = x
-        _minY = y; _maxY = y
-        _minZ = z; _maxZ = z
-    }
-
-    //% block="stopp magnetometer-kalibrering og lagre offset"
-    //% group="Kalibrering"
-    //% advanced=true
-    export function stopMagKal(): void {
-        _calRunning = false
-        _mOffX = (_minX + _maxX) / 2
-        _mOffY = (_minY + _maxY) / 2
-        _mOffZ = (_minZ + _maxZ) / 2
-    }
-
-    //% block="sett magnetometer offset X %x Y %y Z %z (µT)"
-    //% group="Kalibrering"
-    //% advanced=true
-    export function setMagOffset(x: number, y: number, z: number): void {
-        _mOffX = x; _mOffY = y; _mOffZ = z
-    }
-
-    //% block="hent magnetometer offset (tekst)"
-    //% group="Kalibrering"
-    //% advanced=true
-    export function getMagOffset(): string {
-        return "offX=" + Math.round(_mOffX) + " offY=" + Math.round(_mOffY) + " offZ=" + Math.round(_mOffZ)
     }
 
     //% block="helning %h (grader)"
@@ -511,12 +569,6 @@ namespace GY91 {
         yaw += gyro(Akse.Z) * dt
         return Math.round(yaw * 10) / 10     // 1 desimal
     }
-
-    //% block="nullstill yaw"
-    //% group="Kalibrering"
-    //% advanced=true
-    //% weight=45
-    export function nullstillYaw(): void { yaw = 0; lastTime = input.runningTime() }
 
     //% block="kompassretning (grader)"
     //% group="Orientering"
@@ -582,10 +634,123 @@ namespace GY91 {
         return Math.round(p)                 // 0 desimaler (Pa)
     }
 
+    // ───────── Kalibrering ─────────
+
+    //% block="kalibrer gyro (hold rolig)"
+    //% group="Kalibrering"
+    //% weight=50
+    export function kalibrerGyro(): void {
+        ensureInit()
+        if (MPU == 0) { gyroOffsetZ = 0; return }
+        let sum = 0
+        for (let i = 0; i < 60; i++) { sum += read16BE(MPU, 0x47); basic.pause(5) }
+        gyroOffsetZ = Math.idiv(sum, 60)
+    }
+
+    //% block="nullstill yaw"
+    //% group="Kalibrering"
+    //% weight=45
+    export function nullstillYaw(): void {
+        yaw = 0; lastTime = input.runningTime()
+    }
+
+    //% block="start magnetometer-kalibrering"
+    //% group="Kalibrering - Avansert"
+    //% advanced=true
+    export function startMagKal(): void {
+        _calRunning = true
+        let [rx, ry, rz] = magScaledAll()
+            ;[rx, ry, rz] = applyRemap(rx, ry, rz)
+        // offset/gain brukes ikke når vi starter innsamling – vi samler på remappet rådata
+        _minX = rx; _maxX = rx
+        _minY = ry; _maxY = ry
+        _minZ = rz; _maxZ = rz
+    }
+
+    //% block="stopp magnetometer-kalibrering og lagre offset"
+    //% group="Kalibrering - Avansert"
+    //% advanced=true
+    export function stopMagKal(): void {
+        _calRunning = false
+        _mOffX = (_minX + _maxX) / 2
+        _mOffY = (_minY + _maxY) / 2
+        _mOffZ = (_minZ + _maxZ) / 2
+    }
+
+    //% block="sett magnetometer offset X %x Y %y Z %z (µT)"
+    //% group="Kalibrering"
+    //% weight = 51
+    export function setMagOffset(x: number, y: number, z: number): void {
+        _mOffX = x; _mOffY = y; _mOffZ = z
+    }
+
+    //% block="kalibrere offsett til magnetometer"
+    //% group="Kalibrering"
+    //% weight=52
+    export function kalibrereOffsettTilMagnetometer(): void {
+        ensureInit()
+
+        // Engangs-registrering av knapp A for å stoppe/evt. starte på nytt
+        if (!_offBtnHooked) {
+            _offBtnHooked = true
+            input.onButtonPressed(Button.A, function () {
+                if (_offCalActive) _offCalStop()
+                else _offCalStart()
+            })
+        }
+
+        // Kallet på blokka starter kalibrering (trykk A for å stoppe)
+        if (!_offCalActive) _offCalStart()
+    }
+
+    //% block="hent magnetometer offset (tekst)"
+    //% group="Status - Avansert"
+    //% advanced=true
+    export function getMagOffset(): string {
+        return "offX=" + Math.round(_mOffX) + " offY=" + Math.round(_mOffY) + " offZ=" + Math.round(_mOffZ)
+    }
+
+    //% block="sett magnetometer skalering X %gx Y %gy Z %gz"
+    //% group="Kalibrering - Avansert"
+    //% advanced=true
+    export function setMagScale(gx: number, gy: number, gz: number): void {
+        if (gx > 0) _mGainX = gx
+        if (gy > 0) _mGainY = gy
+        if (gz > 0) _mGainZ = gz
+    }
+
+    //% block="hent magnetometer skalering (tekst)"
+    //% group="Status - Avansert"
+    //% advanced=true
+    export function getMagScale(): string {
+        return "gainX=" + Math.round(_mGainX * 100) / 100 + " gainY=" + Math.round(_mGainY * 100) / 100 + " gainZ=" + Math.round(_mGainZ * 100) / 100
+    }
+
+    //% block="sett mag-akse-remap X→%mx Y→%my Z→%mz"
+    //% group="Kalibrering - Avansert"
+    //% advanced=true
+    //% mx.defl=0 my.defl=1 mz.defl=2
+    export function setMagRemap(mx: number, my: number, mz: number): void {
+        _mapX = Math.max(0, Math.min(2, Math.trunc(mx)))
+        _mapY = Math.max(0, Math.min(2, Math.trunc(my)))
+        _mapZ = Math.max(0, Math.min(2, Math.trunc(mz)))
+    }
+
+    //% block="sett mag-fortegn sX %sx sY %sy sZ %sz"
+    //% group="Kalibrering - Avansert"
+    //% advanced=true
+    //% sx.defl=1 sy.defl=1 sz.defl=1
+    export function setMagSign(sx: number, sy: number, sz: number): void {
+        _sgnX = sx >= 0 ? 1 : -1
+        _sgnY = sy >= 0 ? 1 : -1
+        _sgnZ = sz >= 0 ? 1 : -1
+    }
+
+
     // ───────── Avansert (debug/status) ─────────
 
     //% block="sensorstatus (tekst)"
-    //% group="Avansert"
+    //% group="Status - Avansert"
     //% advanced=true
     export function sensorStatus(): string {
         ensureInit()
