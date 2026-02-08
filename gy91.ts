@@ -1,4 +1,4 @@
-//% color=#C71585 weight=35 icon="\uf14e" block="GY91 - 9DOF"
+//% color=#2E8B57 weight=35 icon="\uf14e" block="GY91 - 9DOF"
 namespace GY91 {
     // ───────────────── I2C adresser ─────────────────
     let MPU = 0x68 // autodetekteres (0x68/0x69)
