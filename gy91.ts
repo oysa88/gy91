@@ -679,7 +679,7 @@ namespace GY91 {
 
     //% block="sett magnetometer offset X %x Y %y Z %z (µT)"
     //% group="Kalibrering"
-    //% weight = 51
+    //% weight = 50
     export function setMagOffset(x: number, y: number, z: number): void {
         _mOffX = x; _mOffY = y; _mOffZ = z
     }
@@ -704,8 +704,8 @@ namespace GY91 {
     }
 
     //% block="hent magnetometer offset (tekst)"
-    //% group="Status - Avansert"
-    //% advanced=true
+    //% group="Kalibrering"
+    //% weight=51
     export function getMagOffset(): string {
         return "offX=" + Math.round(_mOffX) + " offY=" + Math.round(_mOffY) + " offZ=" + Math.round(_mOffZ)
     }
