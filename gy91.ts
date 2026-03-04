@@ -684,7 +684,7 @@ namespace GY91 {
         _mOffX = x; _mOffY = y; _mOffZ = z
     }
 
-    //% block="kalibrere offsett til magnetometer"
+    //% block="kalibrere offset til magnetometer"
     //% group="Kalibrering"
     //% weight=52
     export function kalibrereOffsettTilMagnetometer(): void {
